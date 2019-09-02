@@ -144,24 +144,30 @@ def get_columns_by_table(db, schema='public'):
       schema_check = 'c.table_schema=%s'
       params = [schema]
     sql = '''
-        select 
-          c.column_name, 
-          c.data_type, 
-          c.is_nullable='YES' as is_nullable, 
-          coalesce(tc.constraint_type='PRIMARY KEY',false) as primary_key, 
-          c.table_name, 
-          c.column_default,
-          c.character_maximum_length as max_length,
-          c.numeric_precision,
-          c.numeric_scale
-        from information_schema.columns as c
-        left join information_schema.key_column_usage as kcu
-        on (c.table_name=kcu.table_name and c.table_schema=kcu.table_schema and c.column_name=kcu.column_name)
-        left join information_schema.table_constraints as tc
-        on (tc.table_name=kcu.table_name and tc.table_schema=kcu.table_schema and tc.constraint_name=kcu.constraint_name)
-        where %s
-        order by c.ordinal_position
-    ''' % schema_check
+          SELECT c.column_name,
+                 c.data_type,
+                 c.is_nullable='YES' AS is_nullable,
+                 coalesce(pk.constraint_type='PRIMARY KEY', false) AS primary_key,
+                 c.table_name,
+                 c.column_default,
+                 c.character_maximum_length as max_length,
+                 c.numeric_precision,
+                 c.numeric_scale
+          FROM information_schema.columns AS c
+          LEFT JOIN (SELECT kcu.table_schema,
+                            kcu.table_name,
+                            kcu.column_name,
+                            tc.constraint_type
+                     FROM information_schema.key_column_usage AS kcu
+                     LEFT JOIN information_schema.table_constraints AS tc
+                     ON kcu.table_schema = tc.table_schema
+                     AND kcu.table_name = tc.table_name
+                     AND kcu.constraint_name = tc.constraint_name
+                     WHERE tc.constraint_type = 'PRIMARY KEY') AS pk
+          ON (c.table_schema = pk.table_schema and c.table_name = pk.table_name and c.column_name = pk.column_name)
+          WHERE  %s
+          ORDER BY c.ordinal_position
+          ''' % schema_check
     cursor = db.execute_sql(sql, params)
   else:
     raise Exception("don't know how to get columns for %s" % db)
@@ -222,14 +228,14 @@ def get_foreign_keys_by_table(db, schema='public'):
     fks_by_table[fk.table].append(fk)
   return fks_by_table
 
-def calc_column_changes(db, migrator, etn, ntn, existing_columns, defined_fields, existing_fks):
+def calc_column_changes(db, migrator, etn, ntn, existing_columns, defined_fields, existing_fks, defined_model):
   qc = db.compiler()
   defined_fields_by_column_name = {unicode(f.db_column):f for f in defined_fields}
   defined_columns = [ColumnMetadata(
     unicode(f.db_column),
     normalize_field_type(f, qc),
     f.null,
-    f.primary_key,
+    f.primary_key or (defined_model._meta.composite_key and defined_fields_by_column_name[f.db_column] in defined_model._meta.primary_key.field_names),
     unicode(ntn),
     f.default,
     f.max_length if hasattr(f,'max_length') else None,
@@ -370,7 +376,7 @@ def calc_changes(db):
     if not model: continue
     defined_fields = model._meta.sorted_fields
     defined_column_name_to_field = {unicode(f.db_column):f for f in defined_fields}
-    adds, deletes, renames, alter_statements = calc_column_changes(db, migrator, etn, ntn, ecols, defined_fields, foreign_keys_by_table[etn])
+    adds, deletes, renames, alter_statements = calc_column_changes(db, migrator, etn, ntn, ecols, defined_fields, foreign_keys_by_table[etn], defined_model=model)
     for column_name in adds:
       field = defined_column_name_to_field[column_name]
       to_run += alter_add_column(db, migrator, ntn, column_name, field)
@@ -482,8 +488,8 @@ def calc_index_changes(db, migrator, existing_indexes, model, renamed_cols):
   to_run = []
   fields = list(model._meta.sorted_fields)
   fields_by_column_name = {f.db_column:f for f in fields}
-  pk_cols = set([unicode(f.db_column) for f in fields if f.primary_key])
-  existing_indexes = [i for i in existing_indexes if not all([(unicode(c) in pk_cols) for c in i.columns])]
+  pk_cols = set([unicode(f.db_column) for f in fields if f.primary_key or (model._meta.composite_key and  fields_by_column_name[f.db_column] in model._meta.primary_key.field_names)])
+  existing_indexes = [i for i in existing_indexes if not set(unicode(c) for c in i.columns) == pk_cols]
   normalized_existing_indexes = normalize_indexes(existing_indexes)
   existing_indexes_by_normalized_existing_indexes = dict(zip(normalized_existing_indexes, existing_indexes))
   normalized_existing_indexes = set(normalized_existing_indexes)
