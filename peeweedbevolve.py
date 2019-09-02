@@ -65,7 +65,7 @@ def calc_table_changes(existing_tables):
   return adds, add_fks, deletes, renames
   
 def is_postgres(db):
-  return db.__class__.__name__ in ['PostgresqlDatabase','PooledPostgresqlDatabase','PostgresqlExtDatabase']
+  return db.__class__.__name__ in ['PostgresqlDatabase','PooledPostgresqlDatabase','PostgresqlExtDatabase', 'PooledPostgresqlExtDatabase']
 
 def is_mysql(db):
   return db.__class__.__name__ in ['MySQLDatabase']
